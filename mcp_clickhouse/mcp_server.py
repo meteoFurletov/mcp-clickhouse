@@ -13,7 +13,7 @@ from fastmcp import FastMCP
 from fastmcp.tools import Tool
 from fastmcp.prompts import Prompt
 from fastmcp.exceptions import ToolError
-from dataclasses import dataclass, field, asdict, is_dataclass
+from dataclasses import dataclass, asdict, is_dataclass
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 
@@ -22,35 +22,13 @@ from mcp_clickhouse.chdb_prompt import CHDB_PROMPT
 
 
 @dataclass
-class Column:
-    database: str
-    table: str
-    name: str
-    column_type: str
-    default_kind: Optional[str]
-    default_expression: Optional[str]
-    comment: Optional[str]
-
-
-@dataclass
 class Table:
     database: str
     name: str
     engine: str
     create_table_query: str
-    dependencies_database: str
-    dependencies_table: str
-    engine_full: str
-    sorting_key: str
-    primary_key: str
     total_rows: int
-    total_bytes: int
-    total_bytes_uncompressed: int
-    parts: int
-    active_parts: int
-    total_marks: int
     comment: Optional[str] = None
-    columns: List[Column] = field(default_factory=list)
 
 
 MCP_SERVER_NAME = "mcp-clickhouse"
@@ -106,10 +84,6 @@ def result_to_table(query_columns, result) -> List[Table]:
     return [Table(**dict(zip(query_columns, row))) for row in result]
 
 
-def result_to_column(query_columns, result) -> List[Column]:
-    return [Column(**dict(zip(query_columns, row))) for row in result]
-
-
 def to_json(obj: Any) -> str:
     if is_dataclass(obj):
         return json.dumps(asdict(obj), default=to_json)
@@ -137,11 +111,13 @@ def list_databases():
 
 
 def list_tables(database: str, like: Optional[str] = None, not_like: Optional[str] = None):
-    """List available ClickHouse tables in a database, including schema, comment,
-    row count, and column count."""
+    """List available ClickHouse tables in a database, including DDL, row count, and comment.
+
+    The create_table_query (DDL) contains complete table structure including columns, types,
+    constraints, and indexes - easily parseable by LLMs."""
     logger.info(f"Listing tables in database '{database}'")
     client = create_clickhouse_client()
-    query = f"SELECT database, name, engine, create_table_query, dependencies_database, dependencies_table, engine_full, sorting_key, primary_key, total_rows, total_bytes, total_bytes_uncompressed, parts, active_parts, total_marks, comment FROM system.tables WHERE database = {format_query_value(database)}"
+    query = f"SELECT database, name, engine, create_table_query, total_rows, comment FROM system.tables WHERE database = {format_query_value(database)}"
     if like:
         query += f" AND name LIKE {format_query_value(like)}"
 
@@ -152,17 +128,6 @@ def list_tables(database: str, like: Optional[str] = None, not_like: Optional[st
 
     # Deserialize result as Table dataclass instances
     tables = result_to_table(result.column_names, result.result_rows)
-
-    for table in tables:
-        column_data_query = f"SELECT database, table, name, type AS column_type, default_kind, default_expression, comment FROM system.columns WHERE database = {format_query_value(database)} AND table = {format_query_value(table.name)}"
-        column_data_query_result = client.query(column_data_query)
-        table.columns = [
-            c
-            for c in result_to_column(
-                column_data_query_result.column_names,
-                column_data_query_result.result_rows,
-            )
-        ]
 
     logger.info(f"Found {len(tables)} tables")
     return [asdict(table) for table in tables]
